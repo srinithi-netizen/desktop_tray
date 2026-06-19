@@ -1,6 +1,6 @@
 [package]
 name = "fluxbooks-desktop-tray"
-version = "0.1.0"
+version = "0.1.1"
 description = "FluxBooks Desktop Tray App"
 authors = []
 edition = "2021"

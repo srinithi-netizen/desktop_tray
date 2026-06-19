@@ -1,33 +1,50 @@
 <template>
-  <div class="app-container">
-    <header class="app-header">
-      <h1>FluxBooks Desktop Tray</h1>
-      <NetworkStatus />
-      <button class="tray-btn" @click="minimizeToTray">
-        Minimize to Tray
-      </button>
-    </header>
+  <div>
 
-    <main class="app-main">
-      <ClientSelector />
-      <FileSelector @upload-saved="onUploadSaved" />
-      <UploadHistorySection
-        :uploads="uploads"
-        @upload-deleted="onUploadDeleted"
-      />
-    </main>
+    <!-- Show activation screen if not yet activated -->
+    <ActivationScreen v-if="!isActivated" @activated="onActivated" />
+
+    <!-- Show main app after activation -->
+    <div v-else class="app-container">
+      <header class="app-header">
+        <h1>FluxBooks Desktop Tray</h1>
+        <NetworkStatus />
+        <button class="tray-btn" @click="minimizeToTray">
+          Minimize to Tray
+        </button>
+      </header>
+
+      <main class="app-main">
+        <ClientSelector />
+        <FileSelector @upload-saved="onUploadSaved" />
+        <UploadHistorySection
+          :uploads="uploads"
+          @upload-deleted="onUploadDeleted"
+        />
+      </main>
+    </div>
+
   </div>
 </template>
 
 <script setup>
 import { ref } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import ActivationScreen from './components/ActivationScreen.vue'
 import ClientSelector from './components/ClientSelector.vue'
 import FileSelector from './components/FileSelector.vue'
 import UploadHistorySection from './components/UploadHistorySection.vue'
 import NetworkStatus from './components/NetworkStatus.vue'
 
+// Check localStorage on launch — if session exists, skip activation screen
+const isActivated = ref(!!localStorage.getItem('fluxbooks_session'))
+
 const uploads = ref(JSON.parse(localStorage.getItem('uploads') || '[]'))
+
+// Called by ActivationScreen when activation succeeds
+function onActivated() {
+  isActivated.value = true
+}
 
 function onUploadSaved(newUpload) {
   uploads.value.push(newUpload)
@@ -38,10 +55,6 @@ function onUploadDeleted(id) {
   localStorage.setItem('uploads', JSON.stringify(uploads.value))
 }
 
-// getCurrentWindow() returns a reference to the WebviewWindow this
-// Vue app is running inside. .hide() sends a message over Tauri's IPC
-// bridge to the Rust side, which calls window.hide() natively.
-// The process keeps running — only the window becomes invisible.
 async function minimizeToTray() {
   await getCurrentWindow().hide()
 }
