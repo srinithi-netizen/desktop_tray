@@ -16,11 +16,11 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             upload::queue_file,
             upload::get_queue,
+            upload::get_chunks,
             upload::retry_pending,
             upload::delete_upload,
         ])
         .setup(|app| {
-            // Initialize SQLite database
             db::init_db(app.handle()).expect("Failed to init database");
 
             let handle = app.handle();

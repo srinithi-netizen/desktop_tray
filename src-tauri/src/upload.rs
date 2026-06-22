@@ -5,24 +5,35 @@ use std::fs;
 use tauri::AppHandle;
 use uuid::Uuid;
 
-// This is what we send back to Vue for each upload record
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UploadRecord {
-    pub id: String,
-    pub file_name: String,
-    pub local_path: String,
-    pub file_size: i64,
-    pub status: String,    // "pending" | "uploading" | "completed" | "failed"
-    pub progress: i64,     // 0-100
-    pub error_msg: Option<String>,
-    pub queued_at: String,
-    pub uploaded_at: Option<String>,
+    pub id:           String,
+    pub file_name:    String,
+    pub local_path:   String,
+    pub file_size:    i64,
+    pub status:       String,
+    pub progress:     i64,
+    pub total_chunks: i64,
+    pub done_chunks:  i64,
+    pub error_msg:    Option<String>,
+    pub queued_at:    String,
+    pub uploaded_at:  Option<String>,
 }
 
-// Called by Vue when user picks a file
-// 1. Copies file to secure local folder
-// 2. Saves record to SQLite
-// 3. Tries to upload if online
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ChunkRecord {
+    pub id:          i64,
+    pub upload_id:   String,
+    pub chunk_index: i64,
+    pub total:       i64,
+    pub status:      String,   // pending | uploading | done | failed
+    pub size_bytes:  i64,
+    pub sent_at:     Option<String>,
+    pub error_msg:   Option<String>,
+}
+
+// ── Queue a file ──────────────────────────────────────────────────────
+
 #[tauri::command]
 pub async fn queue_file(
     app: AppHandle,
@@ -31,40 +42,57 @@ pub async fn queue_file(
 ) -> Result<UploadRecord, String> {
     let src = std::path::Path::new(&file_path);
 
-    // Get original filename
     let file_name = src
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown")
         .to_string();
 
-    // Get file size
     let file_size = fs::metadata(&file_path)
         .map(|m| m.len() as i64)
         .unwrap_or(0);
 
-    // Generate unique ID for this upload
     let id = Uuid::new_v4().to_string();
 
-    // Copy file to secure local folder
-    // This protects the file even if original is deleted
+    // Copy to secure local folder
     let uploads_dir = db::uploads_dir(&app);
     let local_filename = format!("{}_{}", id, file_name);
     let local_path = uploads_dir.join(&local_filename);
-
     fs::copy(&file_path, &local_path)
         .map_err(|e| format!("Failed to copy file: {}", e))?;
-
     let local_path_str = local_path.to_string_lossy().to_string();
+
+    // Calculate how many chunks this file will need
+    let chunk_size = 512 * 1024_i64; // 512KB
+    let total_chunks = ((file_size as f64) / (chunk_size as f64)).ceil() as i64;
+    let total_chunks = total_chunks.max(1);
+
     let queued_at = chrono::Local::now().to_rfc3339();
 
-    // Save to SQLite
     let conn = db::get_conn(&app).map_err(|e| e.to_string())?;
+
+    // Insert upload record
     conn.execute(
-        "INSERT INTO uploads (id, file_name, local_path, file_size, status, progress, queued_at)
-         VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5)",
-        params![id, file_name, local_path_str, file_size, queued_at],
+        "INSERT INTO uploads
+            (id, file_name, local_path, file_size, status, progress,
+             total_chunks, done_chunks, queued_at)
+         VALUES (?1,?2,?3,?4,'pending',0,?5,0,?6)",
+        params![id, file_name, local_path_str, file_size, total_chunks, queued_at],
     ).map_err(|e| e.to_string())?;
+
+    // Insert one row per chunk — all start as 'pending'
+    for i in 0..total_chunks {
+        let start = i * chunk_size;
+        let end = ((i + 1) * chunk_size).min(file_size);
+        let size = end - start;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO chunks
+                (upload_id, chunk_index, total, status, size_bytes)
+             VALUES (?1,?2,?3,'pending',?4)",
+            params![id, i, total_chunks, size],
+        ).map_err(|e| e.to_string())?;
+    }
 
     let record = UploadRecord {
         id: id.clone(),
@@ -73,12 +101,13 @@ pub async fn queue_file(
         file_size,
         status: "pending".to_string(),
         progress: 0,
+        total_chunks,
+        done_chunks: 0,
         error_msg: None,
         queued_at,
         uploaded_at: None,
     };
 
-    // If online, attempt upload immediately in background
     if is_online {
         let app_clone = app.clone();
         let record_clone = record.clone();
@@ -90,27 +119,30 @@ pub async fn queue_file(
     Ok(record)
 }
 
-// Returns all uploads from SQLite to show in UI
+// ── Get all uploads ───────────────────────────────────────────────────
+
 #[tauri::command]
 pub fn get_queue(app: AppHandle) -> Result<Vec<UploadRecord>, String> {
     let conn = db::get_conn(&app).map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT id, file_name, local_path, file_size, status, progress,
-                error_msg, queued_at, uploaded_at
+                total_chunks, done_chunks, error_msg, queued_at, uploaded_at
          FROM uploads ORDER BY queued_at DESC"
     ).map_err(|e| e.to_string())?;
 
     let records = stmt.query_map([], |row| {
         Ok(UploadRecord {
-            id:          row.get(0)?,
-            file_name:   row.get(1)?,
-            local_path:  row.get(2)?,
-            file_size:   row.get(3)?,
-            status:      row.get(4)?,
-            progress:    row.get(5)?,
-            error_msg:   row.get(6)?,
-            queued_at:   row.get(7)?,
-            uploaded_at: row.get(8)?,
+            id:           row.get(0)?,
+            file_name:    row.get(1)?,
+            local_path:   row.get(2)?,
+            file_size:    row.get(3)?,
+            status:       row.get(4)?,
+            progress:     row.get(5)?,
+            total_chunks: row.get(6)?,
+            done_chunks:  row.get(7)?,
+            error_msg:    row.get(8)?,
+            queued_at:    row.get(9)?,
+            uploaded_at:  row.get(10)?,
         })
     }).map_err(|e| e.to_string())?
     .filter_map(|r| r.ok())
@@ -119,7 +151,36 @@ pub fn get_queue(app: AppHandle) -> Result<Vec<UploadRecord>, String> {
     Ok(records)
 }
 
-// Called by Vue when internet comes back — retries all pending/failed uploads
+// ── Get chunks for a specific upload ─────────────────────────────────
+
+#[tauri::command]
+pub fn get_chunks(app: AppHandle, upload_id: String) -> Result<Vec<ChunkRecord>, String> {
+    let conn = db::get_conn(&app).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, upload_id, chunk_index, total, status, size_bytes, sent_at, error_msg
+         FROM chunks WHERE upload_id = ?1 ORDER BY chunk_index ASC"
+    ).map_err(|e| e.to_string())?;
+
+    let records = stmt.query_map(params![upload_id], |row| {
+        Ok(ChunkRecord {
+            id:          row.get(0)?,
+            upload_id:   row.get(1)?,
+            chunk_index: row.get(2)?,
+            total:       row.get(3)?,
+            status:      row.get(4)?,
+            size_bytes:  row.get(5)?,
+            sent_at:     row.get(6)?,
+            error_msg:   row.get(7)?,
+        })
+    }).map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    Ok(records)
+}
+
+// ── Retry pending/failed uploads ──────────────────────────────────────
+
 #[tauri::command]
 pub async fn retry_pending(app: AppHandle) -> Result<(), String> {
     let records = get_queue(app.clone())?;
@@ -135,103 +196,177 @@ pub async fn retry_pending(app: AppHandle) -> Result<(), String> {
             attempt_upload(&app_clone, &record_clone).await;
         });
     }
-
     Ok(())
 }
 
-// Delete an upload record and its local file
+// ── Delete upload + its chunks + local file ───────────────────────────
+
 #[tauri::command]
 pub fn delete_upload(app: AppHandle, id: String) -> Result<(), String> {
     let conn = db::get_conn(&app).map_err(|e| e.to_string())?;
 
-    // Get local path first so we can delete the file
     let local_path: Option<String> = conn.query_row(
         "SELECT local_path FROM uploads WHERE id = ?1",
         params![id],
         |row| row.get(0),
     ).ok();
 
-    // Delete from database
+    // Chunks deleted automatically via ON DELETE CASCADE
     conn.execute("DELETE FROM uploads WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
 
-    // Delete local file
     if let Some(path) = local_path {
         fs::remove_file(path).ok();
     }
-
     Ok(())
 }
 
-// Internal: actually uploads the file to server
-// Updates progress in SQLite as it goes
-// Vue polls get_queue() to see progress updates
-async fn attempt_upload(app: &AppHandle, record: &UploadRecord) {
-    update_status(app, &record.id, "uploading", 0, None);
+// ── Internal: attempt upload, resuming from last failed chunk ─────────
 
+async fn attempt_upload(app: &AppHandle, record: &UploadRecord) {
+    // Mark upload as uploading
+    if let Ok(conn) = db::get_conn(app) {
+        conn.execute(
+            "UPDATE uploads SET status='uploading', error_msg=NULL WHERE id=?1",
+            params![record.id],
+        ).ok();
+    }
+
+    // Read file bytes
     let file_bytes = match fs::read(&record.local_path) {
         Ok(b) => b,
         Err(e) => {
-            update_status(app, &record.id, "failed", 0, Some(&e.to_string()));
+            update_upload_status(app, &record.id, "failed", 0, 0, Some(&e.to_string()));
             return;
         }
     };
 
-    let chunk_size = 512 * 1024;
-    let chunks: Vec<&[u8]> = file_bytes.chunks(chunk_size).collect();
-    let total_chunks = chunks.len();
+    let chunk_size = 512 * 1024_usize;
+    let all_chunks: Vec<&[u8]> = file_bytes.chunks(chunk_size).collect();
+    let total_chunks = all_chunks.len();
 
     let client = reqwest::Client::new();
 
-    for (i, chunk) in chunks.iter().enumerate() {
-        // ── Using httpbin.org for POC testing ──
-        // Replace this URL with your real server later
-        let url = "https://httpbin.org/post".to_string();
+    // Get which chunks are already done — skip them on retry
+    let done_indices: Vec<i64> = {
+    let conn = match db::get_conn(app) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT chunk_index FROM chunks WHERE upload_id=?1 AND status='done'"
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    stmt.query_map(params![record.id], |row| row.get(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+};
 
+    let mut done_count = done_indices.len() as i64;
+
+    for (i, chunk_data) in all_chunks.iter().enumerate() {
+        let chunk_index = i as i64;
+
+        // Skip already completed chunks
+        if done_indices.contains(&chunk_index) {
+            continue;
+        }
+
+        // Mark this chunk as uploading in DB
+        if let Ok(conn) = db::get_conn(app) {
+            conn.execute(
+                "UPDATE chunks SET status='uploading' WHERE upload_id=?1 AND chunk_index=?2",
+                params![record.id, chunk_index],
+            ).ok();
+        }
+
+        // Send this chunk
+let url = format!(
+    "http://localhost:3000/upload/chunk?id={}&chunk={}&total={}",
+    record.id, i, total_chunks
+);
         let result = client
             .post(&url)
-            .header("X-File-Name", &record.file_name)
-            .header("X-Chunk-Index", i.to_string())
-            .header("X-Total-Chunks", total_chunks.to_string())
-            .header("X-Upload-Id", &record.id)
-            .body(chunk.to_vec())
+            .header("X-File-Name",     &record.file_name)
+            .header("X-Upload-Id",     &record.id)
+            .header("X-Chunk-Index",   chunk_index.to_string())
+            .header("X-Total-Chunks",  total_chunks.to_string())
+            .header("Content-Type",    "application/octet-stream")
+            .body(chunk_data.to_vec())
             .send()
             .await;
 
         match result {
             Ok(resp) if resp.status().is_success() => {
-                let progress = ((i + 1) * 100 / total_chunks) as i64;
-                update_status(app, &record.id, "uploading", progress, None);
+                let sent_at = chrono::Local::now().to_rfc3339();
+                done_count += 1;
+
+                // Mark chunk as done
+                if let Ok(conn) = db::get_conn(app) {
+                    conn.execute(
+                        "UPDATE chunks SET status='done', sent_at=?1, error_msg=NULL
+                         WHERE upload_id=?2 AND chunk_index=?3",
+                        params![sent_at, record.id, chunk_index],
+                    ).ok();
+                }
+
+                // Update overall progress
+                let progress = (done_count * 100 / total_chunks as i64) as i64;
+                update_upload_status(app, &record.id, "uploading", progress, done_count, None);
             }
             Ok(resp) => {
                 let err = format!("Server error: {}", resp.status());
-                update_status(app, &record.id, "failed", 0, Some(&err));
+                mark_chunk_failed(app, &record.id, chunk_index, &err);
+                update_upload_status(app, &record.id, "failed", 0, done_count, Some(&err));
                 return;
             }
             Err(e) => {
-                update_status(app, &record.id, "failed", 0, Some(&e.to_string()));
+                let err = e.to_string();
+                mark_chunk_failed(app, &record.id, chunk_index, &err);
+                update_upload_status(app, &record.id, "failed", 0, done_count, Some(&err));
                 return;
             }
         }
     }
 
+    // All chunks done
     let uploaded_at = chrono::Local::now().to_rfc3339();
-    let conn = match db::get_conn(app) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    conn.execute(
-        "UPDATE uploads SET status='completed', progress=100, uploaded_at=?1 WHERE id=?2",
-        params![uploaded_at, record.id],
-    ).ok();
-}
-
-// Helper to update status in SQLite
-fn update_status(app: &AppHandle, id: &str, status: &str, progress: i64, error: Option<&str>) {
     if let Ok(conn) = db::get_conn(app) {
         conn.execute(
-            "UPDATE uploads SET status=?1, progress=?2, error_msg=?3 WHERE id=?4",
-            params![status, progress, error, id],
+            "UPDATE uploads SET status='completed', progress=100,
+             done_chunks=?1, uploaded_at=?2 WHERE id=?3",
+            params![total_chunks as i64, uploaded_at, record.id],
+        ).ok();
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
+fn mark_chunk_failed(app: &AppHandle, upload_id: &str, chunk_index: i64, error: &str) {
+    if let Ok(conn) = db::get_conn(app) {
+        conn.execute(
+            "UPDATE chunks SET status='failed', error_msg=?1
+             WHERE upload_id=?2 AND chunk_index=?3",
+            params![error, upload_id, chunk_index],
+        ).ok();
+    }
+}
+
+fn update_upload_status(
+    app: &AppHandle,
+    id: &str,
+    status: &str,
+    progress: i64,
+    done_chunks: i64,
+    error: Option<&str>,
+) {
+    if let Ok(conn) = db::get_conn(app) {
+        conn.execute(
+            "UPDATE uploads SET status=?1, progress=?2, done_chunks=?3, error_msg=?4
+             WHERE id=?5",
+            params![status, progress, done_chunks, error, id],
         ).ok();
     }
 }

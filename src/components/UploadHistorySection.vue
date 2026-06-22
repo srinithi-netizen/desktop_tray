@@ -14,6 +14,46 @@
         class="upload-item"
         :class="'item-' + upload.status"
       >
+      <!-- CHUNK DETAILS TOGGLE -->
+<div class="chunk-toggle">
+  <button class="chunk-toggle-btn" @click="toggleChunks(upload.id)">
+    {{ expandedId === upload.id ? '▲ Hide chunks' : '▼ Show chunks' }}
+    ({{ upload.done_chunks }}/{{ upload.total_chunks }} done)
+  </button>
+</div>
+
+<!-- CHUNK TABLE -->
+<div v-if="expandedId === upload.id" class="chunk-table-wrap">
+  <p v-if="loadingChunks" class="chunk-loading">Loading…</p>
+  <table v-else class="chunk-table">
+    <thead>
+      <tr>
+        <th>Chunk</th>
+        <th>Size</th>
+        <th>Status</th>
+        <th>Sent At</th>
+        <th>Error</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr
+        v-for="chunk in chunkMap[upload.id]"
+        :key="chunk.chunk_index"
+        :class="'chunk-' + chunk.status"
+      >
+        <td>{{ chunk.chunk_index + 1 }} / {{ chunk.total }}</td>
+        <td>{{ formatSize(chunk.size_bytes) }}</td>
+        <td>
+          <span class="chunk-badge" :class="'cbadge-' + chunk.status">
+            {{ chunkStatusLabel(chunk.status) }}
+          </span>
+        </td>
+        <td>{{ chunk.sent_at ? formatTime(chunk.sent_at) : '—' }}</td>
+        <td class="chunk-error">{{ chunk.error_msg || '—' }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
         <!-- TOP ROW: icon + filename + delete -->
         <div class="upload-top">
           <span class="file-type-icon">{{ fileIcon(upload.file_name) }}</span>
@@ -96,14 +136,38 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+
 defineProps({
   uploads: { type: Array, required: true },
 })
 
 const emit = defineEmits(['upload-deleted'])
 
+const expandedId   = ref(null)
+const chunkMap     = ref({})
+const loadingChunks = ref(false)
+
 function handleDelete(id) {
   emit('upload-deleted', id)
+}
+
+async function toggleChunks(uploadId) {
+  if (expandedId.value === uploadId) {
+    expandedId.value = null
+    return
+  }
+  expandedId.value = uploadId
+  loadingChunks.value = true
+  try {
+    const chunks = await invoke('get_chunks', { uploadId })
+    chunkMap.value[uploadId] = chunks
+  } catch (e) {
+    console.error('Failed to load chunks:', e)
+  } finally {
+    loadingChunks.value = false
+  }
 }
 
 function formatSize(bytes) {
@@ -133,6 +197,16 @@ function statusLabel(status) {
   return labels[status] || status
 }
 
+function chunkStatusLabel(status) {
+  const labels = {
+    pending:   '⏳',
+    uploading: '⬆️',
+    done:      '✅',
+    failed:    '❌',
+  }
+  return labels[status] || status
+}
+
 function fileIcon(name) {
   if (!name) return '📄'
   const ext = name.split('.').pop().toLowerCase()
@@ -150,24 +224,18 @@ function shortError(msg) {
   if (msg.includes('connection refused')) return 'Server not reachable'
   if (msg.includes('error sending request')) return 'Network error'
   if (msg.includes('timeout')) return 'Connection timed out'
-  if (msg.includes('Server error')) return msg
   return msg.slice(0, 60) + (msg.length > 60 ? '…' : '')
 }
 
 function errorHint(msg) {
   if (!msg) return ''
   if (msg.includes('connection refused') || msg.includes('error sending request')) {
-    return '💡 Hint: Will retry automatically when internet is available.'
-  }
-  if (msg.includes('Server error: 4')) {
-    return '💡 Hint: Server rejected the file. Check file format.'
-  }
-  if (msg.includes('Server error: 5')) {
-    return '💡 Hint: Server error. Will retry automatically.'
+    return '💡 Will retry automatically when internet is available.'
   }
   return '💡 Will retry when internet is available.'
 }
 </script>
+
 
 <style scoped>
 .section-header {
@@ -365,4 +433,59 @@ function errorHint(msg) {
   font-family: monospace;
   word-break: break-all;
 }
+.chunk-toggle { margin-top: 4px; }
+
+.chunk-toggle-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #666;
+  cursor: pointer;
+  padding: 3px 10px;
+}
+.chunk-toggle-btn:hover { background: #f5f5f5; }
+
+.chunk-loading { font-size: 12px; color: #aaa; margin: 4px 0; }
+
+.chunk-table-wrap { overflow-x: auto; }
+
+.chunk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.chunk-table th {
+  text-align: left;
+  padding: 4px 8px;
+  background: #f5f5f5;
+  color: #888;
+  font-weight: 600;
+  border-bottom: 1px solid #eee;
+}
+
+.chunk-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #f5f5f5;
+  color: #555;
+}
+
+.chunk-done      td { background: #f9fff9; }
+.chunk-failed    td { background: #fff9f9; }
+.chunk-uploading td { background: #f0f5ff; }
+.chunk-pending   td { background: #fffef5; }
+
+.chunk-badge {
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+}
+.cbadge-done      { background: #eafaf1; color: #1e8449; }
+.cbadge-failed    { background: #fdedec; color: #c0392b; }
+.cbadge-uploading { background: #eaf4fd; color: #2471a3; }
+.cbadge-pending   { background: #fef9e7; color: #b7950b; }
+
+.chunk-error { color: #e74c3c; max-width: 120px; word-break: break-all; }
 </style>
