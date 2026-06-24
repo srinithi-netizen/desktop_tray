@@ -1209,6 +1209,7 @@ dependencies = [
  "chrono",
  "hex",
  "image",
+ "mime_guess",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

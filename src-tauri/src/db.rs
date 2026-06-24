@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::fs;
 use tauri::{AppHandle, Manager};
 
@@ -16,14 +16,21 @@ pub fn uploads_dir(app: &AppHandle) -> std::path::PathBuf {
 
 pub fn get_conn(app: &AppHandle) -> rusqlite::Result<Connection> {
     let db_path = app_data_dir(app).join("fluxbooks.db");
-    Connection::open(db_path)
+    let conn = Connection::open(db_path)?;
+    // Set on EVERY connection, not just init
+    conn.execute_batch("
+        PRAGMA journal_mode=WAL;
+        PRAGMA busy_timeout=5000;
+        PRAGMA synchronous=NORMAL;
+    ")?;
+    Ok(conn)
 }
 
 pub fn init_db(app: &AppHandle) -> rusqlite::Result<()> {
     let data_dir = app_data_dir(app);
     fs::create_dir_all(&data_dir).ok();
 
-    let conn = get_conn(app)?;
+    let conn = get_conn(app)?;  // already sets WAL
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS uploads (
             id           TEXT PRIMARY KEY,
@@ -40,18 +47,18 @@ pub fn init_db(app: &AppHandle) -> rusqlite::Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS chunks (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        upload_id   TEXT NOT NULL,
-        chunk_index INTEGER NOT NULL,
-        total       INTEGER NOT NULL,
-        status      TEXT NOT NULL DEFAULT 'pending',
-        size_bytes  INTEGER NOT NULL DEFAULT 0,
-        etag        TEXT,          -- ← add this
-        sent_at     TEXT,
-        error_msg   TEXT,
-        UNIQUE(upload_id, chunk_index),
-        FOREIGN KEY(upload_id) REFERENCES uploads(id) ON DELETE CASCADE
-    );
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            upload_id   TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            total       INTEGER NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'pending',
+            size_bytes  INTEGER NOT NULL DEFAULT 0,
+            etag        TEXT,
+            sent_at     TEXT,
+            error_msg   TEXT,
+            UNIQUE(upload_id, chunk_index),
+            FOREIGN KEY(upload_id) REFERENCES uploads(id) ON DELETE CASCADE
+        );
     ")?;
     Ok(())
 }
