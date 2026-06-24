@@ -82,7 +82,7 @@ jobs:
         run: npm run build
 
       - name: Build Tauri
-        run: npm run tauri build -- --bundles msi,nsis --config "{\"bundle\":{\"resources\":{\"resources/server.exe\":\"server.exe\"}}}"
+        run: npm run tauri build -- --bundles msi,nsis --config src-tauri/windows-resources.json
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
