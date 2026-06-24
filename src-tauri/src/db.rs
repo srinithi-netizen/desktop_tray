@@ -40,17 +40,18 @@ pub fn init_db(app: &AppHandle) -> rusqlite::Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS chunks (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            upload_id   TEXT NOT NULL,
-            chunk_index INTEGER NOT NULL,
-            total       INTEGER NOT NULL,
-            status      TEXT NOT NULL DEFAULT 'pending',
-            size_bytes  INTEGER NOT NULL DEFAULT 0,
-            sent_at     TEXT,
-            error_msg   TEXT,
-            FOREIGN KEY (upload_id) REFERENCES uploads(id) ON DELETE CASCADE,
-            UNIQUE(upload_id, chunk_index)
-        );
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        upload_id   TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        total       INTEGER NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'pending',
+        size_bytes  INTEGER NOT NULL DEFAULT 0,
+        etag        TEXT,          -- ← add this
+        sent_at     TEXT,
+        error_msg   TEXT,
+        UNIQUE(upload_id, chunk_index),
+        FOREIGN KEY(upload_id) REFERENCES uploads(id) ON DELETE CASCADE
+    );
     ")?;
     Ok(())
 }
