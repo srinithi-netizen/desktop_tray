@@ -4,20 +4,15 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: {}   # lets you trigger this manually from the Actions tab too
+  workflow_dispatch: {}
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: ubuntu-22.04
-            args: ''
-          - platform: windows-latest
-            args: ''
 
-    runs-on: ${{ matrix.platform }}
+  # ---------------------------------------------------------
+  # UBUNTU — builds the .deb
+  # ---------------------------------------------------------
+  build-ubuntu:
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repo
@@ -32,7 +27,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux build dependencies
-        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -44,7 +38,8 @@ jobs:
             wget \
             file \
             libssl-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            libxdo-dev
 
       - name: Install frontend dependencies
         run: npm install
@@ -56,25 +51,49 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: ${{ matrix.args }}
 
       - name: Upload Linux .deb
-        if: matrix.platform == 'ubuntu-22.04'
         uses: actions/upload-artifact@v4
         with:
           name: fluxbooks-deb
           path: src-tauri/target/release/bundle/deb/*.deb
 
+  # ---------------------------------------------------------
+  # WINDOWS — builds the .msi and .exe
+  # ---------------------------------------------------------
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Upload Windows .msi
-        if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: fluxbooks-msi
           path: src-tauri/target/release/bundle/msi/*.msi
 
       - name: Upload Windows .exe (NSIS)
-        if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: fluxbooks-exe
