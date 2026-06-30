@@ -1210,6 +1210,7 @@ dependencies = [
  "hex",
  "image",
  "mime_guess",
+ "once_cell",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",

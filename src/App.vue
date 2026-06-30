@@ -17,6 +17,8 @@
           @upload-deleted="onUploadDeleted"
         />
       </main>
+        <BankDashboard />
+
     </div>
   </div>
 </template>
@@ -30,6 +32,9 @@ import ClientSelector from './components/ClientSelector.vue'
 import FileSelector from './components/FileSelector.vue'
 import UploadHistorySection from './components/UploadHistorySection.vue'
 import NetworkStatus from './components/NetworkStatus.vue'
+import BankDashboard from './components/BankDashboard.vue';
+
+
 
 const isActivated = ref(!!localStorage.getItem('fluxbooks_session'))
 const uploads = ref([])

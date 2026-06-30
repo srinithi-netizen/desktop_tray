@@ -18,9 +18,11 @@
         "visible": true
       }
     ],
+ 
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src http://localhost:3001; script-src 'self'"
     }
+  
   },
   "bundle": {
     "active": true,
