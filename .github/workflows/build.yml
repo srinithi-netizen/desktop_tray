@@ -2,8 +2,8 @@ name: Build FluxBooks
 
 on:
   push:
-    branches:
-      - main
+     - branches:
+       - main
   workflow_dispatch: {}   # lets you trigger this manually from the Actions tab too
 
 jobs:
@@ -29,9 +29,7 @@ jobs:
           node-version: 20
 
       - name: Install Rust
-        uses: dtolnay/rust-action@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
