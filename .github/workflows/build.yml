@@ -2,8 +2,8 @@ name: Build FluxBooks
 
 on:
   push:
-     - branches:
-       - main
+    branches:
+      - main
   workflow_dispatch: {}   # lets you trigger this manually from the Actions tab too
 
 jobs:
